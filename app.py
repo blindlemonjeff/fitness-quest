@@ -20,13 +20,25 @@ SQL_URL = "https://docs.google.com/spreadsheets/d/1c98F2hH63KycHXdUdGXi0HakGMIWW
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def log_exercise_to_sheets(name, points):
-    # This reads the sheet, adds the new row, and saves it back
-    existing_data = conn.read(spreadsheet=SQL_URL, usecols=[0,1,2])
+    try:
+        # Read the sheet - if it's empty, create a blank dataframe
+        existing_data = conn.read(spreadsheet=SQL_URL)
+    except:
+        existing_data = pd.DataFrame(columns=["Date", "Exercise", "XP"])
+    
+    # Create the new row
     new_entry = pd.DataFrame([[datetime.now().strftime("%Y-%m-%d %H:%M"), name, points]], 
                              columns=["Date", "Exercise", "XP"])
+    
+    # Ensure points are treated as numbers, not text
+    new_entry["XP"] = pd.to_numeric(new_entry["XP"])
+    
+    # Combine and save
     updated_df = pd.concat([existing_data, new_entry], ignore_index=True)
+    
+    # This 'clear' ensures we don't get 'unsupported operation' on an update
     conn.update(spreadsheet=SQL_URL, data=updated_df)
-
+    st.cache_data.clear() # Clears the app's memory so it sees the new data immediately
 # --- 3. DATA CALCULATIONS ---
 try:
     df = conn.read(spreadsheet=SQL_URL)
@@ -87,3 +99,4 @@ with st.expander("Scroll of History"):
         st.dataframe(df.sort_values(by="Date", ascending=False), use_container_width=True)
     else:
         st.write("No quests logged yet.")
+
