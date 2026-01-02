@@ -91,3 +91,60 @@ for i, (task, target) in enumerate(targets.items()):
     if task == "Plank": unit = "secs"
     
     with cols[i]:
+        st.write(f"**{task}**")
+        label = f"{target}{'k' if task=='Walking' and target >= 1000 else ''} {unit}"
+        checks[task] = st.checkbox(label, key=task)
+
+# --- SUBMISSION LOGIC ---
+if st.button("Complete Quest", use_container_width=True):
+    all_done = all(checks.values())
+    
+    # Calculate XP
+    daily_xp = sum(POINTS[k] for k, v in checks.items() if v)
+    if datetime.now().weekday() == 5 and checks["Ropeflow"]:
+        daily_xp += 10 # Extra 10 for the Saturday challenge
+        
+    new_entry = pd.DataFrame([{
+        "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "Pushups": checks["Pushups"],
+        "Squats": checks["Squats"],
+        "Plank": checks["Plank"],
+        "Walking": checks["Walking"],
+        "Ropeflow": checks["Ropeflow"],
+        "Success": all_done,
+        "XP": daily_xp
+    }])
+    
+    updated_df = pd.concat([df, new_entry], ignore_index=True)
+    conn.update(data=updated_df)
+    st.success("Quest Synced!")
+    st.balloons()
+    st.rerun()
+
+# --- ANALYTICS & CHART ---
+st.divider()
+if not df.empty and 'XP' in df.columns:
+    st.subheader("Progress Analytics")
+    
+    # Prepare chart data
+    df_chart = df.copy()
+    df_chart['Date Only'] = pd.to_datetime(df_chart['Date']).dt.date
+    daily_xp = df_chart.groupby('Date Only')['XP'].sum().reset_index()
+    
+    # Show last 30 days
+    cutoff = datetime.now().date() - timedelta(days=30)
+    daily_xp = daily_xp[daily_xp['Date Only'] >= cutoff]
+    
+    if not daily_xp.empty:
+        fig = px.area(daily_xp, x='Date Only', y='XP', title="XP Growth (Last 30 Days)")
+        fig.update_traces(line_color='#00d4ff')
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Progression Stats
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric("Total XP", int(df['XP'].sum()))
+    with c2:
+        perfect_days = pd.to_numeric(df['Success'], errors='coerce').fillna(0).sum()
+        days_to_next = int(14 - (perfect_days % 14))
+        st.metric("Next Level In", f"{days_to_next} Days")
