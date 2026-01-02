@@ -2,99 +2,123 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import datetime, timedelta
+import plotly.express as px
 
-# --- 1. CONFIGURATION ---
-EXERCISES = {
-    "Pushups (20 reps)": 15,
-    "Squats (30 reps)": 15,
-    "Plank (1 min)": 20,
-    "Walking (5000 steps)": 20,
-    "Ropeflow (3 mins)": 10
+# --- CONFIGURATION ---
+st.set_page_config(page_title="Consistency Tracker", page_icon="💪")
+st.title("Consistency Tracker")
+
+# Constants
+POINTS = {
+    "Pushups": 5,
+    "Squats": 5,
+    "Plank": 5,
+    "Walking": 5,
+    "Ropeflow": 10
 }
 
-# Ensure this ID is correct!
-SQL_URL = "https://docs.google.com/spreadsheets/d/1c98F2hH63KycHXdUdGXi0HakGMIWW32PFVxBKP4iMc0/edit#gid=0"
-
-# --- 2. CONNECTION SETUP ---
+# --- DATA CONNECTION ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-def log_exercise_to_sheets(name, points):
-    try:
-        # Try to read the sheet. If it fails or is empty, create a fresh DataFrame
-        try:
-            existing_data = conn.read(spreadsheet=SQL_URL)
-            if existing_data is None or existing_data.empty:
-                existing_data = pd.DataFrame(columns=["Date", "Exercise", "XP"])
-        except:
-            existing_data = pd.DataFrame(columns=["Date", "Exercise", "XP"])
-        
-        # Create new row
-        new_entry = pd.DataFrame([[datetime.now().strftime("%Y-%m-%d %H:%M"), name, points]], 
-                                 columns=["Date", "Exercise", "XP"])
-        
-        # Clean data types to prevent "unsupported operation" errors
-        new_entry["XP"] = pd.to_numeric(new_entry["XP"])
-        if not existing_data.empty:
-            existing_data["XP"] = pd.to_numeric(existing_data["XP"], errors='coerce')
+def load_data():
+    # Adding ttl=0 to ensure we get live data on every refresh
+    return conn.read(ttl="0s")
 
-        # Combine
-        updated_df = pd.concat([existing_data, new_entry], ignore_index=True)
-        
-        # Update the sheet
-        conn.update(spreadsheet=SQL_URL, data=updated_df)
-        st.cache_data.clear()
-        return True
-    except Exception as e:
-        st.error(f"Error logging to sheets: {e}")
-        return False
+df = load_data()
 
-# --- 3. DATA LOAD & CALCULATIONS ---
-try:
-    df = conn.read(spreadsheet=SQL_URL)
-    if df is not None and not df.empty:
-        df['Date'] = pd.to_datetime(df['Date'])
-        df['XP'] = pd.to_numeric(df['XP'], errors='coerce').fillna(0)
+# --- PROGRESSION LOGIC ---
+def get_current_targets(data):
+    base = {"Pushups": 20, "Squats": 30, "Plank": 60, "Walking": 5000, "Ropeflow": 3}
+    if data.empty or 'Success' not in data.columns:
+        return base
         
-        lifetime_xp = int(df["XP"].sum())
-        
-        today = datetime.now()
-        monday = (today - timedelta(days=today.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
-        weekly_xp = int(df[df['Date'] >= monday]['XP'].sum())
-        
-        df['DateOnly'] = df['Date'].dt.date
-        daily_completion = df.groupby('DateOnly')['Exercise'].nunique()
-        target_count = len(EXERCISES)
-        
-        streak = 0
-        check_date = today.date()
-        while check_date in daily_completion and daily_completion[check_date] >= target_count:
-            streak += 1
-            check_date -= timedelta(days=1)
-    else:
-        lifetime_xp, weekly_xp, streak = 0, 0, 0
-        df = pd.DataFrame(columns=["Date", "Exercise", "XP"])
-except Exception:
-    lifetime_xp, weekly_xp, streak = 0, 0, 0
-    df = pd.DataFrame(columns=["Date", "Exercise", "XP"])
+    perfect_days = data['Success'].sum()
+    levels_gained = int(perfect_days // 14)
+    
+    for i in range(levels_gained):
+        cycle_step = i % 3
+        if cycle_step == 0:
+            base["Pushups"] += 5
+        elif cycle_step == 1:
+            base["Squats"] += 5
+        elif cycle_step == 2:
+            base["Plank"] += 15 
+            
+    return base
 
-# --- 4. UI DISPLAY ---
-st.set_page_config(page_title="Fitness Quest", page_icon="⚔️")
+targets = get_current_targets(df)
 
-st.title("🛡️ Warrior Dashboard")
+# --- SIDEBAR & SATURDAY CHALLENGE ---
+if not df.empty:
+    df['Date'] = pd.to_datetime(df['Date'])
+    last_val = df['Date'].max()
+    st.sidebar.metric("Last Workout", last_val.strftime("%b %d"))
+    st.sidebar.write(f"🕒 {last_val.strftime('%I:%M %p')}")
+else:
+    st.sidebar.write("No history found.")
 
-c1, c2, c3 = st.columns(3)
-c1.metric("Lifetime", f"{lifetime_xp} XP")
-c2.metric("Weekly", f"{weekly_xp} XP")
-c3.metric("Streak", f"{streak} Days", delta="🔥" if streak > 0 else None)
+if datetime.now().weekday() == 5: 
+    st.warning("🏆 **SATURDAY CHALLENGE:** Double your Ropeflow time for +20 XP!")
 
+# --- MAIN UI: QUESTS ---
+st.subheader("Today's Quest")
+cols = st.columns(5)
+checks = {}
+
+for i, (task, target) in enumerate(targets.items()):
+    unit = "reps" if task in ["Pushups", "Squats"] else "m" if task == "Walking" else "mins"
+    if task == "Plank": unit = "secs"
+    
+    with cols[i]:
+        st.write(f"**{task}**")
+        st.caption(f"Target: {target}{'k' if task=='Walking' else ''} {unit}")
+        checks[task] = st.checkbox("Done", key=task)
+
+if st.button("Submit Daily Progress", use_container_width=True):
+    all_done = all(checks.values())
+    new_entry = pd.DataFrame([{
+        "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "Pushups": checks["Pushups"],
+        "Squats": checks["Squats"],
+        "Plank": checks["Plank"],
+        "Walking": checks["Walking"],
+        "Ropeflow": checks["Ropeflow"],
+        "Success": all_done,
+        "XP": sum(POINTS[k] for k, v in checks.items() if v)
+    }])
+    
+    updated_df = pd.concat([df, new_entry], ignore_index=True)
+    conn.update(data=updated_df)
+    st.success("Progress Saved!")
+    st.balloons()
+
+# --- VISUALIZATION: 30-DAY XP GROWTH ---
 st.divider()
+st.subheader("Progress Analytics")
 
-st.subheader("Today's Tasks")
-for exercise, xp in EXERCISES.items():
-    if st.button(f"{exercise} (+{xp} XP)", use_container_width=True):
-        if log_exercise_to_sheets(exercise, xp):
-            st.toast(f"Logged {exercise}!")
-            st.rerun()
+if not df.empty:
+    # Prepare data for chart
+    df_chart = df.copy()
+    df_chart['Date Only'] = df_chart['Date'].dt.date
+    daily_xp = df_chart.groupby('Date Only')['XP'].sum().reset_index()
+    
+    # Filter for last 30 days
+    last_30_days = datetime.now().date() - timedelta(days=30)
+    daily_xp = daily_xp[daily_xp['Date Only'] >= last_30_days]
+    
+    # Create the chart
+    fig = px.area(daily_xp, x='Date Only', y='XP', 
+                  title="30-Day XP Trend",
+                  labels={'XP': 'Daily XP', 'Date Only': 'Date'},
+                  template="plotly_dark")
+    fig.update_traces(line_color='#00d4ff')
+    st.plotly_chart(fig, use_container_width=True)
 
-with st.expander("History Log"):
-    st.dataframe(df.sort_index(ascending=False), use_container_width=True)
+    # Progression Stats
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric("Total XP", int(df['XP'].sum()))
+    with c2:
+        perfect_days = df['Success'].sum()
+        days_to_next = 14 - (perfect_days % 14)
+        st.metric("Days to Level Up", f"{days_to_next}/14")
